@@ -3,11 +3,17 @@ import matplotlib.pyplot as plt
 plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei"]
 plt.rcParams["axes.unicode_minus"] = False
 from pathlib import Path
+import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent  # project root
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
+from csi500_research.performance import calc_performance as _calc_performance
+from csi500_research.portfolio import drift_weights, traded_notional
+from csi500_research.schema import HOLDING_RETURN_COL as RETURN_COL
 
 
 # ============================================================
@@ -42,7 +48,6 @@ SPLITS = ["test"]
 TOP_N_LIST = [50, 100]
 COST_RATES = [0.0, 0.0010, 0.0015, 0.0020]  # 单边成本：0bp, 10bp, 15bp, 20bp
 
-RETURN_COL = "forward_ret_next_exec"
 
 TEST_START = "20230101"
 TEST_END = "20241231"
@@ -62,54 +67,7 @@ def max_drawdown(nav: pd.Series) -> float:
 
 
 def calc_performance(ret: pd.Series, bench_ret: pd.Series | None = None) -> dict:
-    ret = ret.dropna()
-    n = len(ret)
-
-    if n == 0:
-        return {}
-
-    nav = (1 + ret).cumprod()
-    ann_ret = nav.iloc[-1] ** (12 / n) - 1
-    ann_vol = ret.std(ddof=1) * np.sqrt(12)
-    sharpe = ann_ret / ann_vol if ann_vol and ann_vol > 0 else np.nan
-    mdd = max_drawdown(nav)
-    calmar = ann_ret / abs(mdd) if mdd and mdd < 0 else np.nan
-
-    out = {
-        "n_periods": n,
-        "total_return": nav.iloc[-1] - 1,
-        "annual_return": ann_ret,
-        "annual_vol": ann_vol,
-        "sharpe": sharpe,
-        "max_drawdown": mdd,
-        "calmar": calmar,
-        "monthly_win_rate_abs": (ret > 0).mean(),
-        "avg_monthly_return": ret.mean(),
-        "std_monthly_return": ret.std(ddof=1),
-    }
-
-    if bench_ret is not None:
-        aligned = pd.concat([ret, bench_ret], axis=1).dropna()
-        aligned.columns = ["strategy", "benchmark"]
-
-        if not aligned.empty:
-            excess = aligned["strategy"] - aligned["benchmark"]
-            excess_nav = (1 + excess).cumprod()
-            excess_ann = excess_nav.iloc[-1] ** (12 / len(excess)) - 1
-            excess_vol = excess.std(ddof=1) * np.sqrt(12)
-            ir = excess_ann / excess_vol if excess_vol and excess_vol > 0 else np.nan
-
-            out.update({
-                "benchmark_total_return": (1 + aligned["benchmark"]).prod() - 1,
-                "benchmark_annual_return": (1 + aligned["benchmark"]).prod() ** (12 / len(aligned)) - 1,
-                "excess_total_return": (1 + excess).prod() - 1,
-                "excess_annual_return": excess_ann,
-                "excess_annual_vol": excess_vol,
-                "information_ratio": ir,
-                "monthly_win_rate_vs_benchmark": (aligned["strategy"] > aligned["benchmark"]).mean(),
-            })
-
-    return out
+    return _calc_performance(ret, bench_ret, freq=12)
 
 
 def build_benchmark_returns(index_daily: pd.DataFrame, periods: pd.DataFrame) -> pd.DataFrame:
@@ -145,16 +103,7 @@ def calc_turnover(current_weights: pd.Series, previous_weights: pd.Series | None
     cost_rate 是单边成本，成本 = sum(abs(delta_weight)) * cost_rate。
     初始建仓 previous_weights=None，则换手交易额为1。
     """
-    current_weights = current_weights.copy()
-
-    if previous_weights is None:
-        return current_weights.abs().sum()
-
-    all_codes = current_weights.index.union(previous_weights.index)
-    cur = current_weights.reindex(all_codes).fillna(0.0)
-    prev = previous_weights.reindex(all_codes).fillna(0.0)
-
-    return (cur - prev).abs().sum()
+    return traded_notional(current_weights, previous_weights)
 
 
 def run_backtest_one(pred: pd.DataFrame, model: str, split: str, top_n: int, cost_rate: float):
@@ -215,7 +164,9 @@ def run_backtest_one(pred: pd.DataFrame, model: str, split: str, top_n: int, cos
                 "forward_ret_next_exec": r[RETURN_COL],
             })
 
-        prev_weights = current_weights
+        # 下一调仓日前权重先随本期个股收益漂移，再计算下一期真实交易额。
+        holding_returns = selected.set_index("ts_code")[RETURN_COL]
+        prev_weights = drift_weights(current_weights, holding_returns)
 
     return pd.DataFrame(rows), pd.DataFrame(weight_rows)
 
@@ -238,22 +189,12 @@ def main():
     print("pred shape :", pred.shape)
     print("panel shape:", panel.shape)
 
-    # 从 panel 补充 next_execution_date 和 forward_ret_next_exec
-    extra_cols = [
-        "signal_date",
-        "ts_code",
-        "next_execution_date",
-        "forward_ret_next_exec",
-    ]
-
-    extra = panel[extra_cols].drop_duplicates(["signal_date", "ts_code"])
-
-    pred = pred.merge(
-        extra,
-        on=["signal_date", "ts_code"],
-        how="left",
-        validate="many_to_one"
-    )
+    # New model outputs carry the exact holding-period fields. Only fill them
+    # from the panel when reading an older prediction artifact.
+    missing = [c for c in ["next_execution_date", RETURN_COL] if c not in pred.columns]
+    if missing:
+        extra = panel[["signal_date", "ts_code"] + missing].drop_duplicates(["signal_date", "ts_code"])
+        pred = pred.merge(extra, on=["signal_date", "ts_code"], how="left", validate="many_to_one")
 
     # 只做测试期组合回测
     pred = pred[
@@ -262,7 +203,7 @@ def main():
     ].copy()
 
     # 去掉最后一个没有 next_execution_date 的月份
-    pred = pred.dropna(subset=["next_execution_date", "forward_ret_next_exec"]).copy()
+    pred = pred.dropna(subset=["next_execution_date", RETURN_COL]).copy()
 
     print("test pred after merge/dropna:", pred.shape)
     print("signal_date:", pred["signal_date"].min(), "->", pred["signal_date"].max())
@@ -313,7 +254,7 @@ def main():
                         monthly["excess_return"] = monthly["net_return"] - monthly["benchmark_return"]
                         monthly["nav"] = (1 + monthly["net_return"]).cumprod()
                         monthly["benchmark_nav"] = (1 + monthly["benchmark_return"]).cumprod()
-                        monthly["excess_nav"] = (1 + monthly["excess_return"]).cumprod()
+                        monthly["excess_nav"] = monthly["nav"] / monthly["benchmark_nav"]
 
                         all_monthly.append(monthly)
 

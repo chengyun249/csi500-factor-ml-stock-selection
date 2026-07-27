@@ -367,6 +367,8 @@ def load_selected_factor_ic() -> pd.DataFrame:
         mask = mask | factor_text.str.contains(p, case=False, na=False)
 
     out = out[mask].copy()
+    if "factor" in out.columns and "factor_col" in out.columns:
+        out["factor"] = out["factor"].fillna(out["factor_col"])
 
     keep_cols = [
         "module",
@@ -469,6 +471,10 @@ def write_markdown_summary(
     lines.append("")
     lines.append(
         "最终基准统一为中证500全收益指数 `h00905.CSI`，主成本假设为单边 15bp。"
+    )
+    lines.append(
+        "本摘要使用v2校准口径：统一市场交易日标签、价格漂移后换手、"
+        "相对净值超额收益和标准主动收益信息比率。测试组合含23个完整持有期。"
     )
     lines.append("")
 

@@ -1,6 +1,8 @@
 from pathlib import Path
+import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent  # project root
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from itertools import product
 import warnings
 
@@ -10,6 +12,8 @@ import pandas as pd
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
+from csi500_research.schema import HOLDING_RETURN_COL as RETURN_COL, MODEL_TARGET_COL as TARGET_COL
+from csi500_research.validation import purged_fixed_split
 
 warnings.filterwarnings("ignore")
 
@@ -41,8 +45,7 @@ OUT_LGBM_IMPORTANCE = REPORT_DIR / "lgbm_feature_importance_with_finance.csv"
 # 1. 参数
 # ============================================================
 
-TARGET_COL = "target_rank_20d"
-RETURN_COL = "forward_ret_20d"
+# Match the model objective to the realized portfolio holding period.
 
 TRAIN_START = "20180101"
 TRAIN_END = "20211231"
@@ -90,22 +93,12 @@ FEATURE_SETS = {
 # ============================================================
 
 def split_panel(panel: pd.DataFrame):
-    train = panel[
-        (panel["signal_date"] >= TRAIN_START) &
-        (panel["signal_date"] <= TRAIN_END)
-    ].copy()
-
-    valid = panel[
-        (panel["signal_date"] >= VALID_START) &
-        (panel["signal_date"] <= VALID_END)
-    ].copy()
-
-    test = panel[
-        (panel["signal_date"] >= TEST_START) &
-        (panel["signal_date"] <= TEST_END)
-    ].copy()
-
-    return train, valid, test
+    return purged_fixed_split(
+        panel,
+        train_start=TRAIN_START, train_end=TRAIN_END,
+        valid_start=VALID_START, valid_end=VALID_END,
+        test_start=TEST_START, test_end=TEST_END,
+    )
 
 
 def monthly_rank_ic(pred_df: pd.DataFrame, pred_col: str, return_col: str = RETURN_COL) -> pd.DataFrame:
@@ -163,7 +156,7 @@ def make_prediction_frame(
         "industry",
     ] + features
 
-    keep_cols = [c for c in keep_cols if c in df.columns]
+    keep_cols = list(dict.fromkeys(c for c in keep_cols if c in df.columns))
 
     out = df[keep_cols].copy()
     out["model"] = model_name

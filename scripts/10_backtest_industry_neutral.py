@@ -1,9 +1,15 @@
 from pathlib import Path
+import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent  # project root
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
+from csi500_research.performance import calc_performance as _calc_performance
+from csi500_research.portfolio import drift_weights, traded_notional
+from csi500_research.schema import HOLDING_RETURN_COL as RETURN_COL
 
 
 # ============================================================
@@ -41,7 +47,6 @@ TEST_END = "20241231"
 TOP_N_LIST = [50, 100]
 COST_RATES = [0.0, 0.0010, 0.0015, 0.0020, 0.0030]
 
-RETURN_COL = "forward_ret_next_exec"
 
 MODEL_STRATEGIES = [
     "ridge_industry_neutral",
@@ -69,54 +74,7 @@ def max_drawdown(nav: pd.Series) -> float:
 
 
 def calc_performance(ret: pd.Series, bench_ret: pd.Series | None = None, freq: int = 12) -> dict:
-    ret = ret.dropna()
-    n = len(ret)
-
-    if n == 0:
-        return {}
-
-    nav = (1 + ret).cumprod()
-    ann_ret = nav.iloc[-1] ** (freq / n) - 1
-    ann_vol = ret.std(ddof=1) * np.sqrt(freq)
-    sharpe = ann_ret / ann_vol if ann_vol and ann_vol > 0 else np.nan
-    mdd = max_drawdown(nav)
-    calmar = ann_ret / abs(mdd) if pd.notna(mdd) and mdd < 0 else np.nan
-
-    out = {
-        "n_periods": n,
-        "total_return": nav.iloc[-1] - 1,
-        "annual_return": ann_ret,
-        "annual_vol": ann_vol,
-        "sharpe": sharpe,
-        "max_drawdown": mdd,
-        "calmar": calmar,
-        "monthly_win_rate_abs": (ret > 0).mean(),
-        "avg_monthly_return": ret.mean(),
-        "std_monthly_return": ret.std(ddof=1),
-    }
-
-    if bench_ret is not None:
-        aligned = pd.concat([ret, bench_ret], axis=1).dropna()
-        aligned.columns = ["strategy", "benchmark"]
-
-        if not aligned.empty:
-            excess = aligned["strategy"] - aligned["benchmark"]
-            excess_nav = (1 + excess).cumprod()
-            excess_ann = excess_nav.iloc[-1] ** (freq / len(excess)) - 1
-            excess_vol = excess.std(ddof=1) * np.sqrt(freq)
-            ir = excess_ann / excess_vol if excess_vol and excess_vol > 0 else np.nan
-
-            out.update({
-                "benchmark_total_return": (1 + aligned["benchmark"]).prod() - 1,
-                "benchmark_annual_return": (1 + aligned["benchmark"]).prod() ** (freq / len(aligned)) - 1,
-                "excess_total_return": (1 + excess).prod() - 1,
-                "excess_annual_return": excess_ann,
-                "excess_annual_vol": excess_vol,
-                "information_ratio": ir,
-                "monthly_win_rate_vs_benchmark": (aligned["strategy"] > aligned["benchmark"]).mean(),
-            })
-
-    return out
+    return _calc_performance(ret, bench_ret, freq=freq)
 
 
 def build_benchmark_returns(index_daily: pd.DataFrame, periods: pd.DataFrame) -> pd.DataFrame:
@@ -142,14 +100,7 @@ def build_benchmark_returns(index_daily: pd.DataFrame, periods: pd.DataFrame) ->
 
 
 def calc_turnover(current_weights: pd.Series, previous_weights: pd.Series | None) -> float:
-    if previous_weights is None:
-        return current_weights.abs().sum()
-
-    all_codes = current_weights.index.union(previous_weights.index)
-    cur = current_weights.reindex(all_codes).fillna(0.0)
-    prev = previous_weights.reindex(all_codes).fillna(0.0)
-
-    return (cur - prev).abs().sum()
+    return traded_notional(current_weights, previous_weights)
 
 
 def run_backtest_one(pred: pd.DataFrame, strategy: str, top_n: int, cost_rate: float):
@@ -207,7 +158,7 @@ def run_backtest_one(pred: pd.DataFrame, strategy: str, top_n: int, cost_rate: f
                 "forward_ret_next_exec": r[RETURN_COL],
             })
 
-        prev_weights = current_weights
+        prev_weights = drift_weights(current_weights, selected.set_index("ts_code")[RETURN_COL])
 
     return pd.DataFrame(rows), pd.DataFrame(weight_rows)
 
@@ -260,23 +211,10 @@ def prepare_predictions(pred_model: pd.DataFrame, panel: pd.DataFrame) -> pd.Dat
 
     all_pred = pd.concat([model_pred] + factor_frames, ignore_index=True)
 
-    extra = panel[[
-        "signal_date",
-        "ts_code",
-        "next_execution_date",
-        "forward_ret_next_exec",
-    ]].drop_duplicates(["signal_date", "ts_code"])
-
-    all_pred = all_pred.merge(
-        extra,
-        on=["signal_date", "ts_code"],
-        how="left",
-        validate="many_to_one",
-    )
-
-    all_pred = all_pred.rename(columns={
-        "forward_ret_next_exec": RETURN_COL
-    })
+    missing = [c for c in ["next_execution_date", RETURN_COL] if c not in all_pred.columns]
+    if missing:
+        extra = panel[["signal_date", "ts_code"] + missing].drop_duplicates(["signal_date", "ts_code"])
+        all_pred = all_pred.merge(extra, on=["signal_date", "ts_code"], how="left", validate="many_to_one")
 
     all_pred = all_pred[
         (all_pred["signal_date"] >= TEST_START) &
@@ -446,7 +384,7 @@ def main():
                     monthly["excess_return"] = monthly["net_return"] - monthly["benchmark_return"]
                     monthly["nav"] = (1 + monthly["net_return"]).cumprod()
                     monthly["benchmark_nav"] = (1 + monthly["benchmark_return"]).cumprod()
-                    monthly["excess_nav"] = (1 + monthly["excess_return"]).cumprod()
+                    monthly["excess_nav"] = monthly["nav"] / monthly["benchmark_nav"]
 
                     all_monthly.append(monthly)
 

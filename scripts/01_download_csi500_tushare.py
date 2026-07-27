@@ -1,5 +1,6 @@
 import time
 import math
+import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent  # project root
@@ -14,14 +15,15 @@ from tqdm import tqdm
 # 0. 基本配置
 # =========================
 
-TOKEN = "b02a26c560eefaaeea9ffd1e7a1ab34e85be98994f976b632fa06bc8"
+TOKEN = os.getenv("TUSHARE_TOKEN", "").strip()
 
 if not TOKEN:
-    raise ValueError("没有检测到 Tushare Token。")
+    raise ValueError("没有检测到 TUSHARE_TOKEN 环境变量。")
 
 ts.set_token(TOKEN)
 pro = ts.pro_api()
-pro._DataApi__http_url = "http://tsy.xiaodefa.cn"
+if base_url := os.getenv("TUSHARE_BASE_URL", "").strip():
+    pro._DataApi__http_url = base_url
 
 # 正式研究样本：2018-01-01 到 2024-12-31
 # 实际下载多留前后缓冲：

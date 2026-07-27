@@ -1,8 +1,16 @@
 from pathlib import Path
+import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent  # project root
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 import numpy as np
 import pandas as pd
+
+from csi500_research.factors import (
+    attach_market_horizon_prices,
+    attach_target_date_prices,
+    compounded_ex_recent_return,
+)
 
 
 # ============================================================
@@ -170,9 +178,9 @@ df["ret_20"] = g["adj_close"].pct_change(20)
 df["ret_5"] = g["adj_close"].pct_change(5)
 df["ret_60"] = g["adj_close"].pct_change(60)
 
-# 排除最近5日的动量
-df["ret_20_ex5"] = df["ret_20"] - df["ret_5"]
-df["ret_60_ex5"] = df["ret_60"] - df["ret_5"]
+# 排除最近5日的精确复合动量，不使用 long_ret - recent_ret 的近似式
+df["ret_20_ex5"] = compounded_ex_recent_return(df["ret_20"], df["ret_5"])
+df["ret_60_ex5"] = compounded_ex_recent_return(df["ret_60"], df["ret_5"])
 
 # 20日波动率
 df["vol_20"] = g["daily_ret"].rolling(20, min_periods=15).std().reset_index(level=0, drop=True)
@@ -301,33 +309,26 @@ panel = panel.merge(
     validate="many_to_one"
 )
 
-# 计算每只股票从 execution_date 起第20个交易日后的价格
-forward_20_table = add_n_trade_date(price_for_forward, n=20).rename(columns={
-    "trade_date": "execution_date",
-    "trade_date_plus_20": "forward_20_date",
-    "adj_close_plus_20": "forward_20_adj_close",
-})
-
-panel = panel.merge(
-    forward_20_table,
-    on=["ts_code", "execution_date"],
-    how="left",
-    validate="many_to_one"
+# 固定为全市场第20个交易日；停牌时用目标日前最后可见价格估值并显式标记 stale_mark。
+panel = attach_market_horizon_prices(
+    panel,
+    price_for_forward,
+    open_dates,
+    start_date_col="execution_date",
+    horizon=20,
+    output_prefix="forward_20",
 )
 
 panel["forward_ret_20d"] = panel["forward_20_adj_close"] / panel["execution_adj_close"] - 1.0
 
-# 也计算持有到下一次调仓执行日的收益，后续回测时会有用
-next_exec_price = price_for_forward.rename(columns={
-    "trade_date": "next_execution_date",
-    "adj_close": "next_execution_adj_close",
-})
-
-panel = panel.merge(
-    next_exec_price,
-    on=["ts_code", "next_execution_date"],
-    how="left",
-    validate="many_to_one"
+# 持有到下一次调仓执行日；目标日停牌继续按最后可见价格持有并记录陈旧天数。
+panel = attach_target_date_prices(
+    panel,
+    price_for_forward,
+    open_dates,
+    start_date_col="execution_date",
+    target_date_col="next_execution_date",
+    output_prefix="next_execution",
 )
 
 panel["forward_ret_next_exec"] = panel["next_execution_adj_close"] / panel["execution_adj_close"] - 1.0
@@ -346,22 +347,23 @@ panel = panel[
 ].copy()
 
 # 关键字段必须存在
-required_cols = [
+required_feature_cols = [
     "signal_adj_close",
     "execution_adj_close",
-    "forward_ret_20d",
 ] + factor_cols_raw
 
 before = len(panel)
-panel = panel.dropna(subset=required_cols).copy()
+panel = panel.dropna(subset=required_feature_cols).copy()
 after = len(panel)
 
-print(f"删除关键缺失样本: {before - after} 行")
+print(f"删除无法形成信号/入场价的样本: {before - after} 行")
+print("20日标签状态:\n", panel["forward_20_price_status"].value_counts(dropna=False))
+print("下次调仓标签状态:\n", panel["next_execution_price_status"].value_counts(dropna=False))
 print("清洗后 shape:", panel.shape)
 
 # 替换无穷值
 panel.replace([np.inf, -np.inf], np.nan, inplace=True)
-panel = panel.dropna(subset=required_cols).copy()
+panel = panel.dropna(subset=required_feature_cols).copy()
 
 # 对因子按月截面缩尾
 panel = winsorize_by_date(panel, factor_cols_raw, date_col="signal_date", lower=0.01, upper=0.99)
@@ -377,8 +379,9 @@ panel["target_rank_20d"] = panel.groupby("signal_date")["forward_ret_20d"].trans
 # 持有到下一次调仓的 target，也保留
 panel["target_rank_next_exec"] = panel.groupby("signal_date")["forward_ret_next_exec"].transform(safe_rank_pct)
 
-# 去掉标准化后仍缺失的样本
-panel = panel.dropna(subset=factor_cols_z + ["target_rank_20d"]).copy()
+# 只去掉无有效因子的样本。被截尾/退市或区间末端缺标签的样本保留在面板中，
+# 由训练脚本按目标列筛选，避免在数据构建阶段静默制造生存者偏差。
+panel = panel.dropna(subset=factor_cols_z).copy()
 
 # 排序
 panel = panel.sort_values(["signal_date", "ts_code"]).reset_index(drop=True)
@@ -423,6 +426,10 @@ summary_rows.append({
     "item": "max_stocks_per_month",
     "value": panel.groupby("signal_date")["ts_code"].nunique().max()
 })
+for status, count in panel["forward_20_price_status"].value_counts(dropna=False).items():
+    summary_rows.append({"item": f"forward_20_status_{status}", "value": int(count)})
+for status, count in panel["next_execution_price_status"].value_counts(dropna=False).items():
+    summary_rows.append({"item": f"next_execution_status_{status}", "value": int(count)})
 
 summary = pd.DataFrame(summary_rows)
 summary.to_csv(OUT_SUMMARY, index=False, encoding="utf-8-sig")

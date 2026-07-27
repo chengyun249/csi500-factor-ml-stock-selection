@@ -1,5 +1,7 @@
 # Data Directory
 
+> v2: 20-session labels use one market calendar. Suspended target-date marks and censored observations remain auditable through `forward_20_price_status`, `forward_20_stale_sessions`, `next_execution_price_status`, and related columns; panel construction no longer silently deletes them.
+
 This directory stores all project data. Raw and processed data files are **not included** in the repository due to size and licensing.
 
 ## Directory Structure

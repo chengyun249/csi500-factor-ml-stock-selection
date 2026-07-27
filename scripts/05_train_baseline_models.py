@@ -1,6 +1,8 @@
 from pathlib import Path
+import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent  # project root
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from itertools import product
 import warnings
 
@@ -10,6 +12,8 @@ import pandas as pd
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
+from csi500_research.schema import HOLDING_RETURN_COL as RETURN_COL, MODEL_TARGET_COL as TARGET_COL
+from csi500_research.validation import purged_fixed_split
 
 warnings.filterwarnings("ignore")
 
@@ -40,8 +44,8 @@ OUT_LGBM_IMPORTANCE = REPORT_TABLE_DIR / "lgbm_feature_importance.csv"
 # 1. 项目参数
 # ============================================================
 
-TARGET_COL = "target_rank_20d"
-RETURN_COL = "forward_ret_20d"
+# The portfolio is bought on execution_date and liquidated/rebalanced on the
+# next execution date.  Train and evaluate on that exact economic horizon.
 
 TRAIN_START = "20180101"
 TRAIN_END = "20211231"
@@ -80,29 +84,19 @@ def add_directional_features(panel: pd.DataFrame) -> pd.DataFrame:
 
 
 def split_panel(panel: pd.DataFrame):
-    train = panel[
-        (panel["signal_date"] >= TRAIN_START) &
-        (panel["signal_date"] <= TRAIN_END)
-    ].copy()
-
-    valid = panel[
-        (panel["signal_date"] >= VALID_START) &
-        (panel["signal_date"] <= VALID_END)
-    ].copy()
-
-    test = panel[
-        (panel["signal_date"] >= TEST_START) &
-        (panel["signal_date"] <= TEST_END)
-    ].copy()
-
-    return train, valid, test
+    return purged_fixed_split(
+        panel,
+        train_start=TRAIN_START, train_end=TRAIN_END,
+        valid_start=VALID_START, valid_end=VALID_END,
+        test_start=TEST_START, test_end=TEST_END,
+    )
 
 
 def monthly_rank_ic(pred_df: pd.DataFrame, pred_col: str, return_col: str = RETURN_COL) -> pd.DataFrame:
     """
     每个月计算一次 Spearman Rank IC。
-    用 pred_score 和 forward_ret_20d 做 Spearman。
-    与 target_rank_20d 做相关在排序意义上等价。
+    用 pred_score 和 forward_ret_next_exec 做 Spearman。
+    与 target_rank_next_exec 做相关在排序意义上等价。
     """
     rows = []
 
@@ -156,6 +150,7 @@ def make_prediction_frame(df: pd.DataFrame, pred: np.ndarray, model_name: str, s
     out = df[[
         "signal_date",
         "execution_date",
+        "next_execution_date",
         "ts_code",
         "index_weight",
         RETURN_COL,
