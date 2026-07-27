@@ -6,6 +6,14 @@
 
 当前定位：**可复现的量化研究原型，不是可直接实盘部署的交易系统，不构成投资建议。**
 
+## 项目文档导航
+
+- [最终结果摘要](reports/final/final_project_summary.md)：核心策略、模型IC和主要结论；
+- [完整研究报告](reports/final/project_report_draft.md)：研究设计、数据、模型、回测和结论；
+- [策略接纳审查](reports/final/strategy_acceptance_review.md)：Bootstrap、多重比较和部署门槛；
+- [数据目录说明](data/README_data.md)：本地数据结构、生成方式和Git忽略规则；
+- [英文项目介绍](README_EN.md)：英文简版说明。
+
 ## 主要结论
 
 - 低波动因子是目前最有希望的候选策略；

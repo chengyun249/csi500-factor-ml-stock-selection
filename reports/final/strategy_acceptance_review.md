@@ -1,5 +1,7 @@
 # 策略验收审查
 
+[← 返回项目首页](../../README.md) · [查看最终结果摘要](final_project_summary.md) · [查看完整研究报告](project_report_draft.md)
+
 本表不是再次选优，而是对已经查看过的 2023–2024 测试结果做不确定性审计。
 移动区块 bootstrap 使用 3 个月区块、20,000 次重复；同表 14 个策略还报告 Bonferroni 家族下界。
 
