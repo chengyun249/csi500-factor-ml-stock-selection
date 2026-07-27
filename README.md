@@ -1,84 +1,95 @@
-# CSI500 Cross-Sectional Multi-Factor Stock Selection
+# 中证500多因子与机器学习选股研究
 
-## 1. Project Overview
+[English](README_EN.md)
 
-This project studies a monthly-rebalanced cross-sectional stock selection strategy on historical CSI500 constituents.
+本项目研究中证500历史成分股中的月频横截面选股策略，对传统因子、Ridge与LightGBM进行统一的样本外比较。项目重点不是展示一条漂亮的回测曲线，而是尽可能控制幸存者偏差、时间穿越、标签泄漏、基准口径和交易成本误差，判断策略是否真的具备可延续的研究价值。
 
-The full research pipeline includes:
+当前定位：**可复现的量化研究原型，不是可直接实盘部署的交易系统，不构成投资建议。**
+
+## 主要结论
+
+- 低波动因子是目前最有希望的候选策略；
+- LightGBM的测试期平均Rank IC高于Ridge，但没有转化成更好的Top50组合收益；
+- 行业中性化没有普遍改善模型表现；
+- 财务质量因子改善了部分IC指标，但没有形成可靠的组合级增益；
+- 所有14个已审查策略仍属于 `exploratory_research_only`，尚未通过部署门槛。
+
+最重要的认识是：**预测排序指标较好，不等于扣除换手和成本后能够获得超额收益。**
+
+## v2关键修复
+
+2026-07-27版本对原项目的数据、标签、回测和结论进行了系统重构：
+
+- 跳过最近若干交易日的动量改为正确的复利累计；
+- 所有月度标签统一到同一套市场交易日历；
+- 模型目标改为实际执行日至下一执行日的持有期收益排名；
+- 训练、验证和测试边界加入purge，移除标签落入下一数据分段的样本；
+- 检查停牌、缺失价格和被截尾标签；
+- 换手率基于调仓前漂移权重计算，不再直接比较相邻目标权重；
+- 基准统一为中证500全收益指数 `h00905.CSI`；
+- 相对净值定义为策略净值除以基准净值；
+- 信息比率使用标准的主动收益口径；
+- 财务数据按公告日进行point-in-time对齐；
+- 数据接口凭证改为环境变量，源码不再保存Token；
+- 加入数据无关单元测试、流水线入口和GitHub Actions持续集成；
+- 增加区块Bootstrap、多重比较修正和预先声明的继续研究门槛。
+
+## 研究问题
+
+本项目主要回答以下问题：
+
+1. 传统单因子中，哪些因子的横截面有效性更稳定？
+2. LightGBM能否稳定优于Ridge和单因子模型？
+3. 因子经过行业中性化后是否仍然有效？
+4. 财务质量因子能否提供增量信息？
+5. IC提升能否真正转化为扣除成本后的组合收益？
+
+## 数据与实验设置
+
+- 市场：中国A股；
+- 股票池：每个调仓日对应的中证500历史成分股；
+- 数据区间：2018—2024年；
+- 原始频率：日频；
+- 信号与调仓频率：月频；
+- 数据来源：Tushare；
+- 基准：中证500全收益指数 `h00905.CSI`；
+- 主要成本假设：单边15bp；
+- 训练集：2018—2021年；
+- 验证集：2022年；
+- 锁定测试集：2023—2024年，共23个完整持有月。
+
+项目在每个调仓日使用当时的历史指数成分，降低使用当前成分股带来的幸存者偏差。原始行情、处理后数据和模型产物不会提交到Git仓库。
+
+## 因子库
+
+### 基础因子
+
+| 字段 | 含义 |
+|---|---|
+| `ret_20_ex5` | 跳过最近5日的20日动量/反转 |
+| `ret_60_ex5` | 跳过最近5日的60日动量/反转 |
+| `vol_20` | 20日已实现波动率 |
+| `turnover_20` | 20日平均换手率 |
+| `bp` | 账面市值比代理变量 |
+| `log_mv` | 对数总市值 |
+
+用于直接构建组合的方向化因子包括：
 
 ```text
-Data download and cleaning
--> Monthly factor panel construction
--> Single-factor IC tests
--> Ridge / LightGBM model training
--> Portfolio backtesting
--> Robustness checks
--> Industry-neutral factor tests
--> Total-return benchmark correction
--> Financial-quality factor extension
--> Final result aggregation
+low_vol      = -vol_20
+low_turnover = -turnover_20
+value_bp     = bp
 ```
 
-The project is designed as a transparent research prototype rather than a directly deployable live trading system.
+### 财务质量因子
 
-## 2. Research Question
-
-The main question is:
-
-> Can classical cross-sectional factors and machine learning models generate stable excess returns within the CSI500 universe after transaction costs and benchmark correction?
-
-The project further asks:
-
-```text
-1. Which single factors are most stable?
-2. Does LightGBM improve on Ridge and single-factor models?
-3. Does the result survive industry-neutralization?
-4. Do financial-quality factors provide incremental information?
-5. Does IC improvement translate into portfolio returns?
-```
-
-## 3. Data
-
-- Market: China A-share market
-- Universe: historical CSI500 constituents
-- Period: 2018-2024
-- Frequency: daily raw data, monthly signal snapshot
-- Data source: Tushare
-- Benchmark: CSI500 Total Return Index, `h00905.CSI`
-- Main cost assumption: one-way 15bp
-
-Historical index constituents are used at each rebalance date to reduce survivorship bias.
-
-## 4. Factor Library
-
-### Basic factors
-
-```text
-ret_20_ex5      medium-short momentum / reversal
-ret_60_ex5      medium-term momentum / reversal
-vol_20          20-day realized volatility
-turnover_20     20-day average turnover
-bp              book-to-price proxy
-log_mv          log market capitalization
-```
-
-Directional factors include:
-
-```text
-low_vol         = -vol_20
-low_turnover    = -turnover_20
-value_bp        = bp
-```
-
-### Financial-quality factors
-
-Financial indicators are merged point-in-time using:
+财务指标只在满足下式时合并到信号截面：
 
 ```text
 ann_date <= signal_date - 1 day
 ```
 
-The final financial factors include:
+当前财务特征包括：
 
 ```text
 fin_roe_dt
@@ -89,132 +100,135 @@ fin_debt_to_assets_neg
 fin_netprofit_yoy
 ```
 
-The cash-flow quality proxy uses `ocf_to_debt` from Tushare `fina_indicator`.
+其中现金流质量代理变量来自Tushare `fina_indicator` 中的 `ocf_to_debt`。目前行业标签仍不是严格的历史point-in-time口径，这是已知限制。
 
-## 5. Models
+## 模型与目标
 
-Two models are used:
+项目比较两个模型：
 
 ```text
-Ridge regression     linear benchmark
-LightGBM             nonlinear tree-based model
+Ridge回归   线性基准
+LightGBM    非线性树模型
 ```
 
-The target variable is the next-period cross-sectional return rank:
+预测目标为：
 
 ```text
 target_rank_next_exec
 ```
-This target is the cross-sectional rank of the return from the stated execution date to the next execution date, exactly matching the portfolio holding period.
 
-Train / validation / test split:
+它表示从本次实际执行日到下一次执行日的持有期收益横截面排名，与组合真实持有窗口一致。
 
-```text
-Train: 2018-2021
-Validation: 2022
-Test: 2023-2024
+## 样本外主要结果
+
+以下为2023—2024年锁定测试区间、Top50等权、单边15bp成本和中证500全收益基准下的代表性结果：
+
+| 策略 | 策略年化 | 基准年化 | 相对年化 | 信息比率 | 最大回撤 |
+|---|---:|---:|---:|---:|---:|
+| 原始低波动 | 9.26% | -5.12% | 15.16% | 1.03 | -12.67% |
+| 行业中性低波动 | 5.97% | -5.12% | 11.69% | 1.03 | -14.66% |
+| 原始低换手 | 2.87% | -5.12% | 8.43% | 0.58 | -16.52% |
+| 原始BP价值 | 1.85% | -5.12% | 7.35% | 0.47 | -22.90% |
+| 财务增强LightGBM | -4.11% | -5.12% | 1.07% | 0.23 | -28.44% |
+| 行业中性LightGBM | -6.45% | -5.12% | -1.40% | -0.15 | -30.91% |
+| 原始Ridge | -9.12% | -5.12% | -4.21% | -0.60 | -32.68% |
+| 原始LightGBM | -11.63% | -5.12% | -6.86% | -1.43 | -36.14% |
+
+这里的“相对年化”来自策略净值与基准净值之比，不是简单相减。完整结果和所有策略口径请查看 `reports/final/`。
+
+### 模型Rank IC
+
+| 模型 | 特征集 | 测试月数 | 平均Rank IC | ICIR | 正IC占比 |
+|---|---|---:|---:|---:|---:|
+| LightGBM | 原始基础因子 | 23 | 6.93% | 0.51 | 60.87% |
+| 财务增强LightGBM | 原始+财务 | 23 | 6.07% | 0.43 | 60.87% |
+| 行业中性LightGBM | 行业中性基础因子 | 23 | 5.34% | 0.50 | 65.22% |
+| Ridge | 原始基础因子 | 23 | 5.24% | 0.39 | 56.52% |
+
+LightGBM拥有最高的平均Rank IC，但其Top50尾部选择效果、换手和成本后收益均不理想。因此，本项目不把“IC为正”解释成“策略可交易”。
+
+## 稳健性与接纳结论
+
+区块Bootstrap审查显示，两个低波动变体未经多重比较调整的主动收益95%下界为正；但在对全部已审查策略进行家族错误率调整后，下界仍为负。此外，锁定测试期只有23个月，没有达到预先声明的36个月观察门槛。
+
+因此当前结论是：
+
+> 低波动值得继续观察，但现有证据不足以确认其为可部署的稳定Alpha；机器学习尚未提供可靠的组合级增益。
+
+详细接纳审查见 [`reports/final/strategy_acceptance_review.md`](reports/final/strategy_acceptance_review.md)。
+
+## 快速开始
+
+建议使用Python 3.11：
+
+```bash
+git clone https://github.com/chengyun249/csi500-factor-ml-stock-selection.git
+cd csi500-factor-ml-stock-selection
+python -m venv .venv
 ```
 
-## 6. Main Results
+安装开发依赖并运行测试：
 
-### Top50 portfolios, one-way cost = 15bp
-
-| module            | strategy_label                      | annual_return   | benchmark_annual_return   | excess_annual_return   |   information_ratio | max_drawdown   | monthly_win_rate_vs_benchmark   |   avg_traded_notional |
-|:------------------|:------------------------------------|:----------------|:--------------------------|:-----------------------|--------------------:|:---------------|:--------------------------------|----------------------:|
-| 原始口径          | 原始低波动单因子 Top50              | 9.26%           | -5.12%                    | 15.16%                 |                1.03 | -12.67%        | 65.22%                          |                  1.18 |
-| 行业中性化        | 行业中性低波动单因子 Top50          | 5.97%           | -5.12%                    | 11.69%                 |                1.03 | -14.66%        | 60.87%                          |                  1.29 |
-| 原始口径          | 原始低换手单因子 Top50              | 2.87%           | -5.12%                    | 8.43%                  |                0.58 | -16.52%        | 56.52%                          |                  0.58 |
-| 原始口径          | 原始 BP 价值单因子 Top50            | 1.85%           | -5.12%                    | 7.35%                  |                0.47 | -22.90%        | 56.52%                          |                  0.22 |
-| 行业中性化        | 行业中性 BP 价值单因子 Top50        | 1.46%           | -5.12%                    | 6.94%                  |                1.03 | -26.27%        | 65.22%                          |                  0.32 |
-| 行业中性化        | 行业中性低换手单因子 Top50          | -1.65%          | -5.12%                    | 3.67%                  |                0.39 | -19.64%        | 60.87%                          |                  0.84 |
-| 财务增强-原始口径 | 财务增强 LightGBM（原始口径） Top50 | -4.11%          | -5.12%                    | 1.07%                  |                0.23 | -28.44%        | 47.83%                          |                  1.29 |
-| 财务增强-行业中性 | 财务增强 LightGBM（行业中性） Top50 | -5.67%          | -5.12%                    | -0.57%                 |               -0.08 | -31.40%        | 43.48%                          |                  1.36 |
-| 行业中性化        | 行业中性 LightGBM Top50             | -6.45%          | -5.12%                    | -1.40%                 |               -0.15 | -30.91%        | 43.48%                          |                  1.58 |
-| 财务增强-原始口径 | 财务增强 Ridge（原始口径） Top50    | -6.59%          | -5.12%                    | -1.55%                 |               -0.25 | -29.99%        | 47.83%                          |                  0.8  |
-| 行业中性化        | 行业中性 Ridge Top50                | -7.47%          | -5.12%                    | -2.47%                 |               -0.4  | -30.15%        | 39.13%                          |                  1.29 |
-| 财务增强-行业中性 | 财务增强 Ridge（行业中性） Top50    | -7.82%          | -5.12%                    | -2.84%                 |               -0.43 | -32.72%        | 39.13%                          |                  1.15 |
-| 原始口径          | 原始 Ridge Top50                    | -9.12%          | -5.12%                    | -4.21%                 |               -0.6  | -32.68%        | 34.78%                          |                  0.9  |
-| 原始口径          | 原始 LightGBM Top50                 | -11.63%         | -5.12%                    | -6.86%                 |               -1.43 | -36.14%        | 43.48%                          |                  1.47 |
-
-## 7. Model IC Comparison
-
-| module           | model                     | feature_set   |   n_months | ic_mean   |   icir |   t_stat | positive_ratio   |
-|:-----------------|:--------------------------|:--------------|-----------:|:----------|-------:|---------:|:-----------------|
-| 原始基础模型     | lightgbm                  | base_raw      |         23 | 6.93%     |   0.51 |     2.47 | 60.87%           |
-| 财务增强模型     | lightgbm_finance          | raw_fin       |         23 | 6.07%     |   0.43 |     2.08 | 60.87%           |
-| 财务增强模型     | lightgbm_finance          | ind_neu_fin   |         23 | 5.96%     |   0.49 |     2.36 | 73.91%           |
-| 行业中性基础模型 | ridge_industry_neutral    | base_ind_neu  |         23 | 5.39%     |   0.5  |     2.38 | 65.22%           |
-| 行业中性基础模型 | lightgbm_industry_neutral | base_ind_neu  |         23 | 5.34%     |   0.5  |     2.42 | 65.22%           |
-| 原始基础模型     | ridge                     | base_raw      |         23 | 5.24%     |   0.39 |     1.87 | 56.52%           |
-| 财务增强模型     | ridge_finance             | raw_fin       |         23 | 5.24%     |   0.34 |     1.63 | 56.52%           |
-| 财务增强模型     | ridge_finance             | ind_neu_fin   |         23 | 5.05%     |   0.4  |     1.94 | 65.22%           |
-
-## 8. Key Findings
-
-- Original low-volatility Top50: 年化收益 9.26%，年化超额 15.16%，信息比率 1.03，最大回撤 -12.67%。
-- Original LightGBM Top50: 年化收益 -11.63%，年化超额 -6.86%，信息比率 -1.43，最大回撤 -36.14%。
-- Industry-neutral low-volatility Top50: 年化收益 5.97%，年化超额 11.69%，信息比率 1.03，最大回撤 -14.66%。
-- Finance-enhanced LightGBM Top50: 年化收益 -4.11%，年化超额 1.07%，信息比率 0.23，最大回撤 -28.44%。
-
-The main conclusion is:
-
-> Low volatility is the most robust alpha source in this project. LightGBM has a higher mean test Rank IC than Ridge in the original factor space, but its cost-adjusted Top50 portfolio is worse and it does not outperform the low-volatility single-factor strategy. After industry-neutralization, LightGBM's portfolio performance weakens substantially, while low volatility remains effective. Financial-quality factors improve some IC metrics but do not translate into superior portfolio returns.
-
-All 14 reviewed Top50 variants remain `exploratory_research_only`: the locked window has only 23 complete months. The block-bootstrap audit and pre-declared continuation gates are in [`reports/final/strategy_acceptance_review.md`](reports/final/strategy_acceptance_review.md). The two low-volatility variants have positive unadjusted 95% lower bounds, but their multiple-comparison familywise lower bounds are negative and neither meets the 36-month gate.
-
-## 9. Limitations
-
-```text
-1. The out-of-sample test period is short, covering only 2023-2024.
-2. The current portfolio is TopN equal-weighted, without formal optimization.
-3. Industry neutralization uses current Tushare industry labels, not historical industry classifications.
-4. No explicit simulation of limit-up / limit-down execution failure, suspension, market impact, or capacity constraints.
-5. Financial factors are based on Tushare fina_indicator and use point-in-time ann_date alignment, but the factor set remains relatively simple.
+```bash
+pip install -e ".[dev]"
+python -m pytest -q
 ```
 
-## 10. Suggested Future Work
+运行核心流程或完整流程：
 
-```text
-1. Add portfolio optimization with turnover and industry constraints.
-2. Extend the factor library using earnings revisions, analyst expectations, and high-frequency liquidity measures.
-3. Use walk-forward retraining instead of a fixed train / validation / test split.
-4. Test longer periods and other universes such as CSI300, CSI1000, and all-A dynamic universe.
-5. Add execution realism: suspensions, limit-up / limit-down, slippage, and capacity constraints.
+```bash
+python scripts/run_pipeline.py --profile core
+python scripts/run_pipeline.py --profile full
 ```
 
-## 11. Repository Structure
+完整流程需要本地原始数据。只查看将要运行的步骤：
 
-```text
-data/
-  raw/
-  processed/
-  model_outputs/
-  backtest_results/
-
-reports/
-  tables/
-  figures/
-  final/
-
-*.py
-  02_build_factor_panel.py
-  03_factor_ic_analysis.py
-  05_train_baseline_models.py
-  06_portfolio_backtest.py
-  07_robustness_checks.py
-  08_build_industry_neutral_panel.py
-  09_train_industry_neutral_models.py
-  10_backtest_industry_neutral.py
-  11_update_benchmark_total_return.py
-  12_download_fina_indicator.py
-  13_add_financial_factors.py
-  14_train_models_with_finance.py
-  15_backtest_models_with_finance.py
-  16_collect_final_results.py
+```bash
+python scripts/run_pipeline.py --profile full --dry-run
 ```
 
-## 12. Final Positioning
+刷新Tushare数据时使用环境变量：
 
-This project is best positioned as:
+```powershell
+$env:TUSHARE_TOKEN = "your-token"
+python scripts/01_download_csi500_tushare.py
+```
 
-> A reproducible CSI500 cross-sectional research workflow in which low volatility is the most promising candidate, while the current sample is insufficient to establish a deployable edge and machine learning adds no reliable portfolio-level improvement.
+请勿将Token、`.env`、原始行情或模型文件提交到仓库。
+
+## 目录结构
+
+```text
+src/csi500_research/        可复用的研究与回测组件
+scripts/                    数据处理、训练、回测和汇总入口
+tests/                      数据无关单元测试
+data/                       本地数据目录（大部分内容被Git忽略）
+reports/tables/             结果表
+reports/figures/            图表
+reports/final/              最终总结、限制和接纳审查
+.github/workflows/          持续集成配置
+```
+
+## 已知限制
+
+1. 锁定样本外测试仅覆盖2023—2024年，统计功效有限；
+2. 组合采用TopN等权，没有正式的风险和换手优化；
+3. 行业中性化使用当前可得的Tushare行业标签，而非完整历史行业分类；
+4. 尚未完整模拟涨跌停无法成交、ST、停牌、退市收益、冲击成本和容量约束；
+5. 财务因子虽然按公告日对齐，但因子数量和会计口径仍较简单；
+6. 当前结果已经被多次审查，后续不应继续围绕同一测试期反复调参。
+
+## 后续研究方向
+
+- 累积至少36个完整、未参与调参的样本外月份；
+- 加入行业、风险暴露和换手约束下的组合优化；
+- 建立严格point-in-time的历史行业、ST、停牌和成分数据；
+- 完善涨跌停、无法成交、冲击成本和容量模型；
+- 采用滚动训练，并将参数选择与最终评估区间彻底隔离；
+- 在中证300、中证1000或全A动态股票池上进行独立复验。
+
+## 最终定位
+
+本项目最合适的表述是：
+
+> 一个可复现的中证500横截面研究流程。低波动是当前最有希望的候选因子，但样本长度尚不足以确认可部署优势，机器学习也没有带来可靠的组合收益提升。

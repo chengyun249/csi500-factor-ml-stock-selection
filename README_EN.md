@@ -1,5 +1,7 @@
 # CSI 500 Factor and Machine-Learning Stock Selection
 
+[中文说明](README.md)
+
 An educational point-in-time cross-sectional research project comparing traditional factors, Ridge and LightGBM on historical CSI 500 constituents. This is not a live trading system or investment advice.
 
 ## v2 calibration
